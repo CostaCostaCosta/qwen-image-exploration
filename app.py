@@ -29,22 +29,22 @@ def get_gpu_memory():
 
 
 def load_pipeline():
-    """Load the Qwen Image Edit pipeline with memory optimizations"""
+    """Load the Qwen Image Edit 2509 pipeline with memory optimizations"""
     global pipe
 
     if pipe is None:
-        print("Loading Qwen-Image-Edit pipeline...")
+        print("Loading Qwen-Image-Edit-2509 pipeline...")
 
         # Load the original pipeline
         pipe = QwenImageEditPipeline.from_pretrained(
-            "Qwen/Qwen-Image-Edit",
+            "Qwen/Qwen-Image-Edit-2509",
             torch_dtype=torch.bfloat16,
         )
 
         # Apply DFloat11 compression to transformer (32% size reduction, lossless)
         print("Applying DFloat11 compression...")
         DFloat11Model.from_pretrained(
-            "DFloat11/Qwen-Image-Edit-DF11",
+            "DFloat11/Qwen-Image-Edit-2509-DF11",
             device="cpu",
             bfloat16_model=pipe.transformer,
         )
@@ -87,8 +87,30 @@ def preprocess_image(image, max_size=1024):
     return image
 
 
+def preprocess_images(images, max_size=1024):
+    """Preprocess multiple images (1-3 images)"""
+    if not images:
+        return None
+
+    # Filter out None values
+    valid_images = [img for img in images if img is not None]
+
+    if not valid_images:
+        return None
+
+    # Process each image
+    processed = [preprocess_image(img, max_size) for img in valid_images]
+
+    # Return single image or list based on count
+    if len(processed) == 1:
+        return processed[0]
+    return processed
+
+
 def edit_image(
-    input_image,
+    input_image1,
+    input_image2,
+    input_image3,
     prompt,
     num_inference_steps=50,
     true_cfg_scale=4.0,
@@ -96,10 +118,12 @@ def edit_image(
     progress=gr.Progress()
 ):
     """
-    Main image editing function
+    Main image editing function supporting 1-3 images
 
     Args:
-        input_image: Input PIL Image or numpy array
+        input_image1: First input image (required)
+        input_image2: Second input image (optional)
+        input_image3: Third input image (optional)
         prompt: Text prompt for editing
         num_inference_steps: Number of denoising steps
         true_cfg_scale: Guidance scale for editing
@@ -109,9 +133,12 @@ def edit_image(
     global edit_history
 
     try:
+        # Collect all input images
+        input_images = [input_image1, input_image2, input_image3]
+
         # Validation
-        if input_image is None:
-            return None, "Please upload an image first!", get_gpu_memory()
+        if input_image1 is None:
+            return None, "Please upload at least one image!", get_gpu_memory()
 
         if not prompt or prompt.strip() == "":
             return None, "Please enter a prompt!", get_gpu_memory()
@@ -120,9 +147,12 @@ def edit_image(
         progress(0.1, desc="Loading pipeline...")
         pipeline = load_pipeline()
 
-        # Preprocess image
-        progress(0.2, desc="Preprocessing image...")
-        processed_image = preprocess_image(input_image)
+        # Preprocess images
+        progress(0.2, desc="Preprocessing images...")
+        processed_images = preprocess_images(input_images)
+
+        # Count valid images
+        num_images = len(processed_images) if isinstance(processed_images, list) else 1
 
         # Set seed
         if seed == -1:
@@ -131,10 +161,10 @@ def edit_image(
         generator = torch.Generator(device="cuda").manual_seed(seed)
 
         # Run inference
-        progress(0.3, desc=f"Editing image ({num_inference_steps} steps)...")
+        progress(0.3, desc=f"Editing {num_images} image(s) ({num_inference_steps} steps)...")
 
         output = pipeline(
-            image=processed_image,
+            image=processed_images,
             prompt=prompt,
             num_inference_steps=int(num_inference_steps),
             true_cfg_scale=float(true_cfg_scale),
@@ -148,9 +178,10 @@ def edit_image(
         edit_history.append({
             "timestamp": timestamp,
             "prompt": prompt,
-            "original": processed_image,
+            "original": processed_images if isinstance(processed_images, list) else [processed_images],
             "edited": edited_image,
             "seed": seed,
+            "num_images": num_images,
         })
 
         # Keep only last 10 edits
@@ -163,13 +194,15 @@ def edit_image(
         gc.collect()
         torch.cuda.empty_cache()
 
-        info_text = f"✓ Edit completed!\nSeed: {seed}\nSteps: {num_inference_steps}\nCFG Scale: {true_cfg_scale}"
+        info_text = f"✓ Edit completed!\nImages used: {num_images}\nSeed: {seed}\nSteps: {num_inference_steps}\nCFG Scale: {true_cfg_scale}"
 
         return edited_image, info_text, get_gpu_memory()
 
     except Exception as e:
         error_msg = f"Error: {str(e)}"
         print(error_msg)
+        import traceback
+        traceback.print_exc()
         return None, error_msg, get_gpu_memory()
 
 
@@ -208,22 +241,37 @@ def create_interface():
     ) as demo:
 
         gr.Markdown("""
-        # 🎨 Qwen Image Edit Demo
+        # 🎨 Qwen Image Edit 2509 Demo
 
-        Upload an image and describe the changes you want to make. The model will edit your image based on your prompt.
+        Upload 1-3 images and describe the changes you want to make. The model supports multi-image editing for combining, merging, and referencing multiple images.
 
-        **Powered by:** Qwen-Image-Edit - DF11
+        **Powered by:** Qwen-Image-Edit-2509 with DFloat11 Compression | **Supports:** 1-3 images
         """)
 
         with gr.Row():
             with gr.Column(scale=1):
                 # Input section
-                gr.Markdown("### Input")
-                input_image = gr.Image(
-                    label="Upload Image",
+                gr.Markdown("### Input Images (1-3)")
+
+                with gr.Row():
+                    input_image1 = gr.Image(
+                        label="Image 1 (Required)",
+                        type="pil",
+                        sources=["upload", "clipboard"],
+                        height=200
+                    )
+                    input_image2 = gr.Image(
+                        label="Image 2 (Optional)",
+                        type="pil",
+                        sources=["upload", "clipboard"],
+                        height=200
+                    )
+
+                input_image3 = gr.Image(
+                    label="Image 3 (Optional)",
                     type="pil",
                     sources=["upload", "clipboard"],
-                    height=400
+                    height=200
                 )
 
                 prompt = gr.Textbox(
@@ -304,10 +352,20 @@ def create_interface():
         # Tips section
         with gr.Accordion("💡 Tips for Best Results", open=False):
             gr.Markdown("""
+            **Single Image Editing:**
             - **Be specific**: "turn the cat into a golden retriever" works better than "change animal"
             - **Lighting & style**: Try "make it nighttime", "add dramatic lighting", "make it look like anime"
             - **Season & weather**: "change to winter with snow", "make it sunny"
             - **Artistic styles**: "turn into watercolor painting", "make it cyberpunk style"
+
+            **Multi-Image Editing (2-3 images):**
+            - **Person + Person**: "Place person from image 1 on the left, person from image 2 on the right"
+            - **Person + Scene**: "Place the person in image 1 into the background from image 2"
+            - **Person + Object**: "Have the person from image 1 wearing the outfit from image 2"
+            - **Style transfer**: "Apply the artistic style from image 1 to the scene in image 2"
+            - **Object combination**: "Merge the furniture from both images into a single room"
+
+            **General Settings:**
             - **Inference steps**: 30-50 is usually enough, more steps = slower but potentially better quality
             - **CFG Scale**: 4.0 is recommended, lower = more creative, higher = follows prompt more strictly
             - **Image size**: Large images are auto-resized to 1024px for optimal performance
@@ -316,13 +374,13 @@ def create_interface():
         # Event handlers
         edit_btn.click(
             fn=edit_image,
-            inputs=[input_image, prompt, num_steps, cfg_scale, seed],
+            inputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, seed],
             outputs=[output_image, info_box, gpu_memory]
         )
 
         clear_btn.click(
-            fn=lambda: (None, "", "", get_gpu_memory()),
-            outputs=[input_image, prompt, info_box, gpu_memory]
+            fn=lambda: (None, None, None, "", "", get_gpu_memory()),
+            outputs=[input_image1, input_image2, input_image3, prompt, info_box, gpu_memory]
         )
 
         refresh_history_btn.click(
@@ -340,7 +398,7 @@ def create_interface():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Qwen Image Edit Gradio Demo")
+    print("Qwen Image Edit 2509 Gradio Demo (Multi-Image Support)")
     print("=" * 60)
     print(f"PyTorch version: {torch.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
