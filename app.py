@@ -6,7 +6,7 @@ Runs locally on RTX 5090 with Blackwell architecture
 
 import gradio as gr
 import torch
-from diffusers import QwenImageEditPipeline
+from diffusers import QwenImageEditPlusPipeline
 from dfloat11 import DFloat11Model
 from PIL import Image
 import numpy as np
@@ -36,7 +36,7 @@ def load_pipeline():
         print("Loading Qwen-Image-Edit-2509 pipeline...")
 
         # Load the original pipeline
-        pipe = QwenImageEditPipeline.from_pretrained(
+        pipe = QwenImageEditPlusPipeline.from_pretrained(
             "Qwen/Qwen-Image-Edit-2509",
             torch_dtype=torch.bfloat16,
         )
@@ -87,8 +87,8 @@ def preprocess_image(image, max_size=1024):
     return image
 
 
-def preprocess_images(images, max_size=1024):
-    """Preprocess multiple images (1-3 images)"""
+def preprocess_images(images, target_size=1024):
+    """Preprocess multiple images (1-3 images) ensuring consistent dimensions"""
     if not images:
         return None
 
@@ -98,13 +98,24 @@ def preprocess_images(images, max_size=1024):
     if not valid_images:
         return None
 
-    # Process each image
-    processed = [preprocess_image(img, max_size) for img in valid_images]
+    # For single image, use standard preprocessing
+    if len(valid_images) == 1:
+        return preprocess_image(valid_images[0], target_size)
 
-    # Return single image or list based on count
-    if len(processed) == 1:
-        return processed[0]
-    return processed
+    # For multiple images, resize all to target_size x target_size (1024x1024 standard)
+    # This ensures consistent dimensions and matches Qwen's expected input
+    resized = []
+    for img in valid_images:
+        if isinstance(img, np.ndarray):
+            img = Image.fromarray(img)
+
+        # Resize to square target_size while maintaining aspect ratio by padding
+        # or crop to square if preferred, but for now we'll resize to exact square
+        img_resized = img.resize((target_size, target_size), Image.LANCZOS)
+        print(f"Resized from {img.size} to {target_size}x{target_size}")
+        resized.append(img_resized)
+
+    return resized
 
 
 def edit_image(
@@ -114,6 +125,8 @@ def edit_image(
     prompt,
     num_inference_steps=50,
     true_cfg_scale=4.0,
+    guidance_scale=1.0,
+    negative_prompt=" ",
     seed=-1,
     progress=gr.Progress()
 ):
@@ -126,7 +139,9 @@ def edit_image(
         input_image3: Third input image (optional)
         prompt: Text prompt for editing
         num_inference_steps: Number of denoising steps
-        true_cfg_scale: Guidance scale for editing
+        true_cfg_scale: Qwen's proprietary guidance scale
+        guidance_scale: Standard diffusion guidance scale
+        negative_prompt: What to avoid in the output
         seed: Random seed (-1 for random)
         progress: Gradio progress tracker
     """
@@ -168,6 +183,8 @@ def edit_image(
             prompt=prompt,
             num_inference_steps=int(num_inference_steps),
             true_cfg_scale=float(true_cfg_scale),
+            guidance_scale=float(guidance_scale),
+            negative_prompt=negative_prompt if negative_prompt.strip() else " ",
             generator=generator,
         )
 
@@ -194,7 +211,7 @@ def edit_image(
         gc.collect()
         torch.cuda.empty_cache()
 
-        info_text = f"✓ Edit completed!\nImages used: {num_images}\nSeed: {seed}\nSteps: {num_inference_steps}\nCFG Scale: {true_cfg_scale}"
+        info_text = f"✓ Edit completed!\nImages used: {num_images}\nSeed: {seed}\nSteps: {num_inference_steps}\nTrue CFG: {true_cfg_scale} | Guidance: {guidance_scale}"
 
         return edited_image, info_text, get_gpu_memory()
 
@@ -296,8 +313,24 @@ def create_interface():
                         maximum=10.0,
                         value=4.0,
                         step=0.5,
-                        label="CFG Scale",
-                        info="How strongly to follow the prompt"
+                        label="True CFG Scale",
+                        info="Qwen's guidance mechanism (4.0 recommended)"
+                    )
+
+                    guidance_scale = gr.Slider(
+                        minimum=0.5,
+                        maximum=5.0,
+                        value=1.0,
+                        step=0.1,
+                        label="Guidance Scale",
+                        info="1.0 = balanced, higher = stricter prompt following"
+                    )
+
+                    negative_prompt = gr.Textbox(
+                        label="Negative Prompt",
+                        placeholder="What to avoid in the output (leave empty for default)",
+                        lines=2,
+                        value=" "
                     )
 
                     seed = gr.Number(
@@ -367,20 +400,22 @@ def create_interface():
 
             **General Settings:**
             - **Inference steps**: 30-50 is usually enough, more steps = slower but potentially better quality
-            - **CFG Scale**: 4.0 is recommended, lower = more creative, higher = follows prompt more strictly
+            - **True CFG Scale**: 4.0 is recommended (Qwen's proprietary guidance mechanism)
+            - **Guidance Scale**: 1.0 is balanced, higher values = stricter prompt following, lower = more creative freedom
+            - **Negative Prompt**: Describe what to avoid (e.g., "blurry, distorted, low quality")
             - **Image size**: Large images are auto-resized to 1024px for optimal performance
             """)
 
         # Event handlers
         edit_btn.click(
             fn=edit_image,
-            inputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, seed],
+            inputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, seed],
             outputs=[output_image, info_box, gpu_memory]
         )
 
         clear_btn.click(
-            fn=lambda: (None, None, None, "", "", get_gpu_memory()),
-            outputs=[input_image1, input_image2, input_image3, prompt, info_box, gpu_memory]
+            fn=lambda: (None, None, None, "", 50, 4.0, 1.0, " ", -1, "", get_gpu_memory()),
+            outputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, seed, info_box, gpu_memory]
         )
 
         refresh_history_btn.click(
