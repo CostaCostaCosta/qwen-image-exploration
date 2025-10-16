@@ -17,20 +17,6 @@ import gc
 pipe = None
 edit_history = []
 
-# Preset prompts for quick testing
-PRESET_PROMPTS = [
-    "turn into a watercolor painting",
-    "make it look like a sketch",
-    "change season to winter with snow",
-    "change season to autumn with fall colors",
-    "make it nighttime with stars",
-    "make it look like anime style",
-    "turn this cat into a dog",
-    "add sunglasses",
-    "make it cyberpunk style",
-    "turn into a vintage photo",
-]
-
 
 def get_gpu_memory():
     """Get current GPU memory usage"""
@@ -212,11 +198,6 @@ def clear_history():
     return [], "History cleared!", get_gpu_memory()
 
 
-def update_prompt_from_preset(preset):
-    """Update prompt textbox from preset dropdown"""
-    return preset
-
-
 # Build Gradio interface
 def create_interface():
     """Create the Gradio interface"""
@@ -231,7 +212,7 @@ def create_interface():
 
         Upload an image and describe the changes you want to make. The model will edit your image based on your prompt.
 
-        **Powered by:** Qwen-Image-Edit | **Hardware:** RTX 5090 Blackwell | **Precision:** BF16
+        **Powered by:** Qwen-Image-Edit - DF11
         """)
 
         with gr.Row():
@@ -243,13 +224,6 @@ def create_interface():
                     type="pil",
                     sources=["upload", "clipboard"],
                     height=400
-                )
-
-                # Preset prompts
-                preset_dropdown = gr.Dropdown(
-                    choices=PRESET_PROMPTS,
-                    label="Preset Prompts (Optional)",
-                    info="Select a preset or write your own"
                 )
 
                 prompt = gr.Textbox(
@@ -340,12 +314,6 @@ def create_interface():
             """)
 
         # Event handlers
-        preset_dropdown.change(
-            fn=update_prompt_from_preset,
-            inputs=[preset_dropdown],
-            outputs=[prompt]
-        )
-
         edit_btn.click(
             fn=edit_image,
             inputs=[input_image, prompt, num_steps, cfg_scale, seed],
