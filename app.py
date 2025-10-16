@@ -16,6 +16,7 @@ import gc
 # Global variables
 pipe = None
 edit_history = []
+current_cpu_offload = True  # Track current CPU offload setting
 
 
 def get_gpu_memory():
@@ -28,12 +29,20 @@ def get_gpu_memory():
     return "GPU not available"
 
 
-def load_pipeline():
+def load_pipeline(cpu_offload=True):
     """Load the Qwen Image Edit 2509 pipeline with memory optimizations"""
-    global pipe
+    global pipe, current_cpu_offload
+
+    # Check if we need to reload due to CPU offload setting change
+    if pipe is not None and cpu_offload != current_cpu_offload:
+        print(f"CPU offload setting changed ({current_cpu_offload} -> {cpu_offload}), reloading pipeline...")
+        pipe = None
+        gc.collect()
+        torch.cuda.empty_cache()
 
     if pipe is None:
         print("Loading Qwen-Image-Edit-2509 pipeline...")
+        current_cpu_offload = cpu_offload
 
         # Load the original pipeline
         pipe = QwenImageEditPlusPipeline.from_pretrained(
@@ -49,9 +58,14 @@ def load_pipeline():
             bfloat16_model=pipe.transformer,
         )
 
-        # Enable CPU offloading to reduce peak VRAM (moves models to CPU when not in use)
-        print("Enabling CPU offloading...")
-        pipe.enable_model_cpu_offload()
+        if cpu_offload:
+            # Enable CPU offloading to reduce peak VRAM (moves models to CPU when not in use)
+            print("Enabling CPU offloading...")
+            pipe.enable_model_cpu_offload()
+        else:
+            # Move entire pipeline to GPU for faster inference
+            print("Loading pipeline to GPU (no CPU offloading)...")
+            pipe.to("cuda")
 
         # Enable attention slicing to reduce memory during inference
         print("Enabling attention slicing...")
@@ -127,6 +141,7 @@ def edit_image(
     true_cfg_scale=4.0,
     guidance_scale=1.0,
     negative_prompt=" ",
+    cpu_offload=True,
     seed=-1,
     progress=gr.Progress()
 ):
@@ -142,6 +157,7 @@ def edit_image(
         true_cfg_scale: Qwen's proprietary guidance scale
         guidance_scale: Standard diffusion guidance scale
         negative_prompt: What to avoid in the output
+        cpu_offload: Enable CPU offloading (slower but uses less VRAM)
         seed: Random seed (-1 for random)
         progress: Gradio progress tracker
     """
@@ -160,7 +176,7 @@ def edit_image(
 
         # Load pipeline
         progress(0.1, desc="Loading pipeline...")
-        pipeline = load_pipeline()
+        pipeline = load_pipeline(cpu_offload=cpu_offload)
 
         # Preprocess images
         progress(0.2, desc="Preprocessing images...")
@@ -333,6 +349,12 @@ def create_interface():
                         value=" "
                     )
 
+                    cpu_offload = gr.Checkbox(
+                        label="CPU Offloading",
+                        value=True,
+                        info="Enable to use <1GB VRAM (slower). Disable for ~30GB VRAM (2x faster)"
+                    )
+
                     seed = gr.Number(
                         label="Seed",
                         value=-1,
@@ -403,19 +425,20 @@ def create_interface():
             - **True CFG Scale**: 4.0 is recommended (Qwen's proprietary guidance mechanism)
             - **Guidance Scale**: 1.0 is balanced, higher values = stricter prompt following, lower = more creative freedom
             - **Negative Prompt**: Describe what to avoid (e.g., "blurry, distorted, low quality")
+            - **CPU Offloading**: Enable (default) for minimal VRAM usage but slower. Disable for 2x faster inference with 30GB VRAM
             - **Image size**: Large images are auto-resized to 1024px for optimal performance
             """)
 
         # Event handlers
         edit_btn.click(
             fn=edit_image,
-            inputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, seed],
+            inputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, cpu_offload, seed],
             outputs=[output_image, info_box, gpu_memory]
         )
 
         clear_btn.click(
-            fn=lambda: (None, None, None, "", 50, 4.0, 1.0, " ", -1, "", get_gpu_memory()),
-            outputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, seed, info_box, gpu_memory]
+            fn=lambda: (None, None, None, "", 50, 4.0, 1.0, " ", True, -1, "", get_gpu_memory()),
+            outputs=[input_image1, input_image2, input_image3, prompt, num_steps, cfg_scale, guidance_scale, negative_prompt, cpu_offload, seed, info_box, gpu_memory]
         )
 
         refresh_history_btn.click(
